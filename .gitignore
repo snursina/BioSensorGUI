@@ -1,0 +1,5 @@
+dist/*
+build/*
+__pycache__/*
+measurement_log.txt
+config_log.txt
