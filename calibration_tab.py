@@ -3,15 +3,24 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl
-import os
+import os, sys
 import numpy as np
 import plotly.graph_objs as go
 import plotly.io as pio
 import tempfile
+import math
+
+if hasattr(sys, "_MEIPASS"): application_path = sys._MEIPASS
+elif getattr(sys, 'frozen', False): application_path = os.path.dirname(sys.executable)
+elif __file__: application_path = os.path.dirname(__file__)
+if hasattr(sys, "_MEIPASS"): file_path = os.path.dirname(sys.executable)
+else: file_path = sys.path[0]
 
 class CalibrationTab(QWidget):
-    def __init__(self):
+    def __init__(self, main_window):
         super().__init__()
+
+        self.main_window = main_window
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
@@ -54,8 +63,12 @@ class CalibrationTab(QWidget):
         return float(match.group(1)) if match else 0
 
     def extract_impedance(self, file_path, start_freq, stop_freq):
-        freqs = []
-        mags = []
+        # find the magnitude where the phase is minimum
+
+        #freqs = []
+        #mags = []
+        phase = 180
+        mag = 0
 
         with open(file_path, 'r') as f:
             for line in f:
@@ -63,22 +76,29 @@ class CalibrationTab(QWidget):
                     continue  # Skip empty lines
                 try:
                     parts = line.strip().split(',')
-                    freq = float(parts[0])
-                    mag = float(parts[3])
+                    real = float(parts[0])
+                    imag = float(parts[1])
+                    freq = float(parts[2])
+                    mag_now = float(math.sqrt(real**2 + imag**2))
+                    phase_now = float(math.degrees(math.atan2(imag, real)))
+
                     if stop_freq <= freq <= start_freq:
-                        freqs.append(freq)
-                        mags.append(mag)
+                        if np.abs(phase_now) < np.abs(phase):
+                            phase = phase_now
+                            mag = mag_now
+                        #freqs.append(freq)
+                        #mags.append(mag)
                         #print(mag)
                 except (IndexError, ValueError):
                     continue  # Skip malformed lines
 
-        if not mags:
-            return 0  # Or np.nan to indicate missing data
+        #if not mags:
+        #    return 0  # Or np.nan to indicate missing data
 
-        return float(np.mean(mags))
+        return float(mag)
 
     def load_calibration_data(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Calibration Folder")
+        folder = QFileDialog.getExistingDirectory(self, 'Select Calibration Folder', file_path)
         if not folder:
             return
 
@@ -106,7 +126,11 @@ class CalibrationTab(QWidget):
             QMessageBox.warning(self, "No Data", "No valid calibration data found.")
             return
 
-        self.plot_calibration_curve(np.array(concentrations), np.array(impedances))
+        sort_idx = np.argsort(np.array(concentrations))
+        concentrations_sorted = np.array(concentrations)[sort_idx]
+        impedances_sorted = np.array(impedances)[sort_idx]
+        
+        self.plot_calibration_curve(np.array(concentrations_sorted), np.array(impedances_sorted))
 
     def plot_calibration_curve(self, x, y):
 
@@ -142,7 +166,7 @@ class CalibrationTab(QWidget):
             xaxis_title="Creatinine Concentration (µM)",
             yaxis_title="Impedance (Ω)",
             template="plotly_white",
-            height=500,
+            height=int(self.main_window.app_height/1.2),
         )
 
         tmp_dir = tempfile.gettempdir()

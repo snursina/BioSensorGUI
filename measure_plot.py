@@ -12,7 +12,7 @@ MAKE_MEASUREMENT = False # only plots the measurement_log if false
 CMD = {
     "START_CONFIG": 5,
     "STOP_CONFIG": 6,
-    "SET_VOLTAGE_EIS": 104,
+    "SET_VOLTAGE_EIS": 108,
     "SET_NUM_FREQ_EIS": 107,
     "START_MEAS_EIS": 3,
     "STOP_MEAS": 0,
@@ -209,7 +209,7 @@ def parse_line_calibrated(line, calibration_resistor):
     # Adjust imaginary part sign to match plotting conventions (optional)
     Zx_im = -Zx_im
 
-    return freq, Zx_re/10, Zx_im/10, Zx_mag/10, math.degrees(Zx_phase)
+    return freq, Zx_re, Zx_im, Zx_mag, math.degrees(Zx_phase)
 
 def set_min_lim(y_data, axis=1, min_range=1000, ax=None):
     """
@@ -272,7 +272,7 @@ if __name__ == "__main__":
     # Read and parse measurement_log.txt
     with open('measurement_log.txt', 'r') as file:
         for line in file:
-            parsed = parse_line_calibrated(line, 10000)
+            parsed = parse_line_calibrated(line, 1000)
             if parsed:
                 freq, Zx_re, Zx_im, Zx_mag, Zx_phase_deg = parsed
                 #print(f"Freq: {freq} Hz, Zx_re: {Zx_re} Ω, Zx_im: {Zx_im} Ω, Mag: {Zx_mag} Ω, Phase: {Zx_phase_deg:.2f}°")

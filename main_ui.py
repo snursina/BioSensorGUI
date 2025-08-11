@@ -2,6 +2,7 @@ import sys, os
 import threading
 import serial
 import tempfile
+import math
 import serial.tools.list_ports
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout,
@@ -11,11 +12,20 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject, pyqtSlot, QUrl
 import plotly.graph_objs as go
 from plotly import io as pio
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # Requires PyQtWebEngine
+from PyQt5.QtGui import QGuiApplication, QPixmap, QIcon
 
 from measure_plot import (
     reset_via_pylink, config_eis, start_measurement, parse_line_calibrated
 )
 from calibration_tab import CalibrationTab
+from ctgan_tab import CTGANTab
+from bpnn_tab import BPNNTab
+
+if hasattr(sys, "_MEIPASS"): application_path = sys._MEIPASS
+elif getattr(sys, 'frozen', False): application_path = os.path.dirname(sys.executable)
+elif __file__: application_path = os.path.dirname(__file__)
+if hasattr(sys, "_MEIPASS"): file_path = os.path.dirname(sys.executable)
+else: file_path = sys.path[0]
 
 class LowPassFilter:
     def __init__(self, factor: int = 8):
@@ -57,11 +67,35 @@ class MeasurementThread(threading.Thread):
     def stop(self):
         self._stop_flag.set()
 
+
+import sys
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QListWidget, QStackedWidget,
+    QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox, QStatusBar#, QWebEngineView
+)
+from PyQt5.QtCore import Qt
+
+
 class MainApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EIS Measurement GUI")
-        self.setGeometry(100, 100, 1280, 1000)
+        self.setWindowTitle("AixScan")
+        self.setWindowIcon(QIcon("app_icon.svg"))
+        screen_geometry = QGuiApplication.primaryScreen().availableGeometry()
+
+        # Half dimensions
+        self.app_width = int(screen_geometry.width() // 1.5)
+        self.app_height = int(screen_geometry.height() // 1.5)
+
+        # Center position
+        x = screen_geometry.x() + (screen_geometry.width() - self.app_width) // 1.5
+        y = screen_geometry.y() + (screen_geometry.height() - self.app_height) // 1.5
+
+        self.setGeometry(int(x), int(y), self.app_width, self.app_height)
+        # screen_geometry = QGuiApplication.primaryScreen().availableGeometry()
+        # self.setGeometry(screen_geometry/2)
+        # self.showMaximized()
+        # self.setGeometry(100, 100, 1280, 1000)
 
         self.ser = None
         self.measurement_thread = None
@@ -81,23 +115,137 @@ class MainApp(QMainWindow):
         self.signals.status_update.connect(self.update_status)
         self.signals.measurement_finished.connect(self.on_measurement_finished)
 
-        self.init_ui()
+        # === Central layout ===
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
 
-    def init_ui(self):
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        # === Sidebar tabs ===
+        self.tab_list = QListWidget()
+        self.tab_list.setFocusPolicy(Qt.NoFocus)
+        self.tab_list.setFixedWidth(170)
+        self.tab_list.addItem("Live Measurement")
+        self.tab_list.addItem("Magnitude & Phase")
+        self.tab_list.addItem("Load Data")
+        self.tab_list.addItem("Curve Fit")
+        self.tab_list.addItem("CTGAN")
+        self.tab_list.addItem("BPNN")
+        self.tab_list.setCurrentRow(0)
 
-        self.init_tab1()
-        self.init_tab2()
-        self.init_tab3()
+        # === Stacked content ===
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.init_tab_live())
+        self.stack.addWidget(self.init_tab_mag_phase())
+        self.stack.addWidget(self.init_tab_load_data())
+        self.calibration_tab = CalibrationTab(self)
+        self.stack.addWidget(self.calibration_tab)
+        self.ctgan_tab = CTGANTab(self)
+        self.stack.addWidget(self.ctgan_tab)
+        self.bpnn_tab = BPNNTab(self)
+        self.stack.addWidget(self.bpnn_tab)
 
-        self.calibration_tab = CalibrationTab()
-        self.tabs.addTab(self.calibration_tab, "Calibration")
+        self.tab_list.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        self.status_bar = QLabel("Select COM port to start.")
-        self.statusBar().addWidget(self.status_bar)
+        # === Assemble ===
+        sidebar_layout = QVBoxLayout()
 
-    def init_tab1(self):
+        # Add tab list to top
+        sidebar_layout.addWidget(self.tab_list)
+
+        # Spacer to push logo to bottom
+        sidebar_layout.addStretch()
+
+        # Add logo at bottom
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("kidney_final.svg")  # Replace with the actual path
+        logo_pixmap = logo_pixmap.scaled(200, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        #logo_pixmap = logo_pixmap.scaledToWidth(100, Qt.SmoothTransformation)
+        logo_label.setPixmap(logo_pixmap)
+        logo_label.setAlignment(Qt.AlignCenter)
+        sidebar_layout.addWidget(logo_label)
+
+        # Wrap in a container widget
+        sidebar_container = QWidget()
+        sidebar_container.setLayout(sidebar_layout)
+
+        # Add sidebar and content to main layout
+        main_layout.addWidget(sidebar_container, 0)
+        main_layout.addWidget(self.stack, 1)
+
+        # === Status Bar ===
+        self.status_bar_label = QLabel("Select COM port to start.")
+        self.status_bar = QStatusBar()
+        self.status_bar.addWidget(self.status_bar_label)
+        self.setStatusBar(self.status_bar)
+
+        # === Styling ===
+        self.setStyleSheet("""
+            QListWidget {
+                background-color: #f0f0f0;
+                border: none;
+            }
+            QListWidget::item {
+                padding: 15px;
+                margin: 5px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QListWidget::item:selected {
+                background-color: #0051a5;
+                color: white;
+            }
+            QLabel {
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #0051a5;
+                color: white;
+                border-radius: 5px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: #1a63ad;
+            }
+            QPushButton:disabled {
+                background-color: #ccc;
+                color: #666;
+            }
+            QLineEdit, QComboBox {
+                padding: 4px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+            }
+            QStatusBar {
+                background-color: #0051a5;
+                color: white;
+            }
+            QStatusBar QLabel{
+                color: white;
+            }
+            QListWidget {
+                background-color: #f0f0f0;
+                border: none;
+                margin-top: 20px;  /* Push tabs down */
+            }
+
+            QListWidget::item {
+                padding: 15px;
+                margin: 5px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+
+            QListWidget::item:selected {
+                background-color: #0051a5;
+                color: white;
+            }
+
+            QListWidget::item:selected:focus {
+                outline: none;  /* REMOVE dotted line on selected tab */
+            }
+        """)
+
+    def init_tab_live(self):
         tab1 = QWidget()
         layout = QVBoxLayout()
 
@@ -113,9 +261,9 @@ class MainApp(QMainWindow):
 
         # Settings inputs
         hsettings = QHBoxLayout()
-        self.input_voltage = QLineEdit("20")  # in mV
-        self.input_start_freq = QLineEdit("10000")
-        self.input_end_freq = QLineEdit("100")
+        self.input_voltage = QLineEdit("10")  # in mV
+        self.input_start_freq = QLineEdit("30000")
+        self.input_end_freq = QLineEdit("10000")
         self.input_num_points = QLineEdit("10")
         self.spacing_combo = QComboBox()
         self.spacing_combo.addItems(["Linear", "Logarithmic"])
@@ -159,12 +307,27 @@ class MainApp(QMainWindow):
         self.live_plot_view = QWebEngineView()
         layout.addWidget(self.live_plot_view)
 
+        hsave = QHBoxLayout()
+        hsave.addWidget(QLabel("Save as:"))
+        self.save_file_name = QLineEdit("sample_uM")
+        self.btn_save = QPushButton("Save Measurement")
+        self.btn_save.clicked.connect(self.save_measurement)
+        self.btn_save.setEnabled(False)
+        hsave.addWidget(self.save_file_name)
+        hsave.addWidget(self.btn_save)
+        layout.addLayout(hsave)
+
         tab1.setLayout(layout)
-        self.tabs.addTab(tab1, "Live Measurement")
+        #self.tabs.addTab(tab1, "Live Measurement")
+
+        self.init_live_plot()
 
         self.refresh_com_ports()
 
-    def init_tab2(self):
+
+        return tab1
+
+    def init_tab_mag_phase(self):
         tab2 = QWidget()
         layout = QVBoxLayout()
 
@@ -175,9 +338,11 @@ class MainApp(QMainWindow):
         layout.addWidget(self.post_plot_view_phase)
 
         tab2.setLayout(layout)
-        self.tabs.addTab(tab2, "Magnitude & Phase")
+        #self.tabs.addTab(tab2, "Magnitude & Phase")
 
-    def init_tab3(self):
+        return tab2
+
+    def init_tab_load_data(self):
         tab3 = QWidget()
         layout = QVBoxLayout()
 
@@ -194,7 +359,9 @@ class MainApp(QMainWindow):
         layout.addWidget(self.load_plot_view_phase)
 
         tab3.setLayout(layout)
-        self.tabs.addTab(tab3, "Load Data")
+        #self.tabs.addTab(tab3, "Load Data")
+
+        return tab3
 
     def refresh_com_ports(self):
         self.combo_com.clear()
@@ -249,6 +416,7 @@ class MainApp(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.btn_configure.setEnabled(False)
         self.btn_connect.setEnabled(False)
+        self.btn_save.setEnabled(False)
 
         self.clear_filters()
 
@@ -265,6 +433,12 @@ class MainApp(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_configure.setEnabled(True)
         self.btn_connect.setEnabled(True)
+        self.btn_save.setEnabled(True)
+
+    def save_measurement(self):
+        with open(os.path.join(file_path, "calibration_data/" + self.save_file_name.text().strip() + ".txt"), "w") as f:
+            for freq, real, imag in zip(self.freq_list, self.live_real, self.live_imag):
+                f.write(f"{real},{imag}, {freq}\n")
 
     def handle_new_data(self, line):
         self.data_lines.append(line)
@@ -325,7 +499,7 @@ class MainApp(QMainWindow):
     def update_live_plot(self):
         # Called on every new data line.
         # Parse the latest data point and send to JS
-        calib_resistor = 10000  # same as before
+        calib_resistor = 1000  # same as before
 
         # Parse only the last line to avoid lagging behind
         line = self.data_lines[-1]
@@ -349,11 +523,11 @@ class MainApp(QMainWindow):
 
 
     def on_measurement_finished(self):
-        freq_list = []
+        self.freq_list = []
         mag_list = []
         phase_list = []
 
-        calib_resistor = 10000
+        calib_resistor = 1000
         for line in self.data_lines:
             parsed = parse_line_calibrated(line, calib_resistor)
             if parsed:
@@ -362,11 +536,11 @@ class MainApp(QMainWindow):
                 mag = self.lp_filter_mag.filter(mag)
                 phase = self.lp_filter_phase.filter(phase)
 
-                freq_list.append(freq)
+                self.freq_list.append(freq)
                 mag_list.append(mag)
                 phase_list.append(phase)
 
-        if not freq_list:
+        if not self.freq_list:
             self.update_status("No data to plot in Magnitude & Phase.")
             return
 
@@ -376,25 +550,25 @@ class MainApp(QMainWindow):
 
         # Plot Magnitude vs Frequency
         fig_mag = go.Figure()
-        fig_mag.add_trace(go.Scatter(x=freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)'))
+        fig_mag.add_trace(go.Scatter(x=self.freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)'))
         fig_mag.update_layout(
             title="Magnitude vs Frequency",
             xaxis_title="Frequency (Hz)",
             yaxis_title="Magnitude (Ω)",
             template="plotly_white",
-            height=400,
+            height=int(self.app_height/2),
         )
         fig_mag.update_yaxes(range=y_range_mag)
 
         # Plot Phase vs Frequency
         fig_phase = go.Figure()
-        fig_phase.add_trace(go.Scatter(x=freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
+        fig_phase.add_trace(go.Scatter(x=self.freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
         fig_phase.update_layout(
             title="Phase vs Frequency",
             xaxis_title="Frequency (Hz)",
             yaxis_title="Phase (°)",
             template="plotly_white",
-            height=400,
+            height=int(self.app_height/2),
         )
         fig_phase.update_yaxes(range=[-190, 190])
 
@@ -414,8 +588,9 @@ class MainApp(QMainWindow):
 
         self.disconnect_serial()
         with open("measurement_log.txt", "w") as f:
-            for freq, real, imag, mag, phase in zip(freq_list, self.live_real, self.live_imag, mag_list, phase_list):
-                f.write(f"{freq},{real},{imag},{mag},{phase}\n")
+            for real, imag, freq in zip(self.live_real, self.live_imag, self.freq_list):#, mag_list, phase_list):
+                f.write(f"{real},{imag},{freq}\n")
+        self.btn_save.setEnabled(True)
         #time.sleep(0.5)
         self.connect_serial()
 
@@ -423,7 +598,7 @@ class MainApp(QMainWindow):
 
 
     def update_status(self, msg):
-        self.status_bar.setText(msg)
+        self.status_bar.showMessage(msg)
 
     def disconnect_serial(self):
         if self.ser and self.ser.is_open:
@@ -447,19 +622,18 @@ class MainApp(QMainWindow):
         with open(file_path, "r") as f:
             lines = f.readlines()
 
-        freq_list, real_vals, imag_vals, mag_list, phase_list = [], [], [], [], []
-
+        real_vals, imag_vals, freq_list, mag_list, phase_list= [], [], [], [], []
         with open(file_path, "r") as f:
             for line in f:
                 parts = line.strip().split(',')
-                if len(parts) != 5:
+                if len(parts) < 3:
                     continue
                 try:
-                    freq = float(parts[0])
-                    real = float(parts[1])
-                    imag = float(parts[2])
-                    mag = float(parts[3])
-                    phase = float(parts[4])
+                    real = float(parts[0])
+                    imag = float(parts[1])
+                    freq = float(parts[2])
+                    mag = float(math.sqrt(real**2 + imag**2))
+                    phase = float(math.degrees(math.atan2(imag, real)))
 
                     freq_list.append(freq)
                     real_vals.append(real)
@@ -478,7 +652,7 @@ class MainApp(QMainWindow):
             yaxis_title="Imag(Z) [Ω]",
             yaxis=dict(scaleanchor="x", scaleratio=1),
             template="plotly_white",
-            height=300,
+            height=self.app_width/4.5,
         )
         #html_nyquist = pio.to_html(fig_nyquist, full_html=False)
 
@@ -494,7 +668,7 @@ class MainApp(QMainWindow):
             yaxis_title="Magnitude (Ω)",
             yaxis=dict(range=[mag_min - mag_pad, mag_max + mag_pad]),
             template="plotly_white",
-            height=250,
+            height=self.app_width/4.5,
         )
 
         fig_phase = go.Figure()
@@ -507,7 +681,7 @@ class MainApp(QMainWindow):
             yaxis_title="Phase (°)",
             yaxis=dict(range=[phase_min - 5, phase_max + 5]),
             template="plotly_white",
-            height=250,
+            height=self.app_width/4.5,
         )
 
         # Write temp files and load them into QWebEngineView
@@ -537,6 +711,14 @@ class MainApp(QMainWindow):
         self.lp_filter_mag.clear()
         self.lp_filter_phase.clear()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.live_plot_view.page().runJavaScript("""
+            Plotly.relayout('plot', {
+                width: window.innerWidth,
+                height: window.innerHeight
+            });
+        """)
     
 
 if __name__ == "__main__":
