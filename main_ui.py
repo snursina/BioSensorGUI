@@ -123,7 +123,7 @@ class MainApp(QMainWindow):
         # === Sidebar tabs ===
         self.tab_list = QListWidget()
         self.tab_list.setFocusPolicy(Qt.NoFocus)
-        self.tab_list.setFixedWidth(170)
+        self.tab_list.setFixedWidth(int(self.app_width/6))#170)
         self.tab_list.addItem("Live Measurement")
         self.tab_list.addItem("Magnitude & Phase")
         self.tab_list.addItem("Load Data")
@@ -158,7 +158,8 @@ class MainApp(QMainWindow):
         # Add logo at bottom
         logo_label = QLabel()
         logo_pixmap = QPixmap("kidney_final.svg")  # Replace with the actual path
-        logo_pixmap = logo_pixmap.scaled(200, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_width = self.tab_list.width()*0.99
+        logo_pixmap = logo_pixmap.scaled(int(logo_width), int(logo_width*0.9), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         #logo_pixmap = logo_pixmap.scaledToWidth(100, Qt.SmoothTransformation)
         logo_label.setPixmap(logo_pixmap)
         logo_label.setAlignment(Qt.AlignCenter)
@@ -188,20 +189,21 @@ class MainApp(QMainWindow):
                 padding: 15px;
                 margin: 5px;
                 border-radius: 5px;
-                font-size: 14px;
+                font-size: 11pt;              /* was 14px */
             }
             QListWidget::item:selected {
                 background-color: #0051a5;
                 color: white;
             }
             QLabel {
-                font-size: 14px;
+                font-size: 11pt;              /* was 14px */
             }
             QPushButton {
                 background-color: #0051a5;
                 color: white;
                 border-radius: 5px;
                 padding: 6px 12px;
+                /* no font-size here; inherit the base font in points */
             }
             QPushButton:hover {
                 background-color: #1a63ad;
@@ -214,6 +216,7 @@ class MainApp(QMainWindow):
                 padding: 4px;
                 border: 1px solid #ccc;
                 border-radius: 4px;
+                /* let them inherit font in points */
             }
             QStatusBar {
                 background-color: #0051a5;
@@ -225,23 +228,20 @@ class MainApp(QMainWindow):
             QListWidget {
                 background-color: #f0f0f0;
                 border: none;
-                margin-top: 20px;  /* Push tabs down */
+                margin-top: 20px;
             }
-
             QListWidget::item {
                 padding: 15px;
                 margin: 5px;
                 border-radius: 5px;
-                font-size: 14px;
+                font-size: 11pt;              /* was 14px */
             }
-
             QListWidget::item:selected {
                 background-color: #0051a5;
                 color: white;
             }
-
             QListWidget::item:selected:focus {
-                outline: none;  /* REMOVE dotted line on selected tab */
+                outline: none;
             }
         """)
 
