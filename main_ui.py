@@ -307,6 +307,9 @@ class MainApp(QMainWindow):
         self.live_plot_view = QWebEngineView()
         layout.addWidget(self.live_plot_view)
 
+        #self.re_im_calc_label = QLabel()
+        #layout.addWidget(self.re_im_calc_label)
+
         hsave = QHBoxLayout()
         hsave.addWidget(QLabel("Save as:"))
         self.save_file_name = QLineEdit("sample_uM")
@@ -513,6 +516,10 @@ class MainApp(QMainWindow):
         Zx_re = self.lp_filter_real.filter(Zx_re)
         Zx_im = self.lp_filter_imag.filter(Zx_im)
 
+        #self.re_im_calc_label.setText(f"Real: {Zx_re:.3f}, Capacity/Inductor: {(1/(freq*2*math.pi*(Zx_im)))}")
+        if Zx_im > 0: print(f"Real: {Zx_re:.3f}, Capacity: {(1/(freq*2*math.pi*(Zx_im)))}")
+        else: print(f"Real: {Zx_re:.3f}, Inductor: {(-Zx_im/(freq*2*math.pi))}")
+        
         # Append locally for logging
         self.live_real.append(Zx_re)
         self.live_imag.append(Zx_im)

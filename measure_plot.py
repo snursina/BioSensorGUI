@@ -12,7 +12,7 @@ MAKE_MEASUREMENT = False # only plots the measurement_log if false
 CMD = {
     "START_CONFIG": 5,
     "STOP_CONFIG": 6,
-    "SET_VOLTAGE_EIS": 108,
+    "SET_VOLTAGE_EIS": 104,
     "SET_NUM_FREQ_EIS": 107,
     "START_MEAS_EIS": 3,
     "STOP_MEAS": 0,
