@@ -162,9 +162,9 @@ class CalibrationTab(QWidget):
         fig.add_trace(go.Scatter(x=x, y=y_fit, mode='lines', name=f'{self.fit_type_combo.currentText()} Fit'))
 
         fig.update_layout(
-            title="Calibration Curve: Impedance vs Concentration",
-            xaxis_title="Creatinine Concentration (µM)",
-            yaxis_title="Impedance (Ω)",
+            title=dict(text="Calibration Curve: Impedance vs Concentration", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Creatinine Concentration (µM)", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Impedance (Ω)", font=dict(size=14)), tickfont=dict(size=12)),
             template="plotly_white",
             height=int(self.main_window.app_height/1.2),
         )

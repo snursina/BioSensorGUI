@@ -469,9 +469,23 @@ class MainApp(QMainWindow):
                     name: 'Impedance'
                 };
                 var layout = {
-                    title: 'Live Nyquist Plot',
-                    xaxis: { title: 'Real(Z) [Ω]' },
-                    yaxis: { title: 'Imag(Z) [Ω]', scaleanchor: "x", scaleratio: 1 },
+                    title: {
+                        text: 'Live Nyquist Plot',
+                        font: { size: 18 }        // title font
+                    },
+                    xaxis: {
+                        title: { text: 'Real(Z) [Ω]', font: { size: 14 } },
+                        tickfont: { size: 12 }    // axis ticks
+                    },
+                    yaxis: {
+                        title: { text: 'Imag(Z) [Ω]', font: { size: 14 } },
+                        tickfont: { size: 12 },
+                        scaleanchor: "x",
+                        scaleratio: 1
+                    },
+                    legend: {
+                        font: { size: 12 }
+                    },
                     template: 'plotly_white',
                     height: 700
                 };
@@ -559,9 +573,9 @@ class MainApp(QMainWindow):
         fig_mag = go.Figure()
         fig_mag.add_trace(go.Scatter(x=self.freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)'))
         fig_mag.update_layout(
-            title="Magnitude vs Frequency",
-            xaxis_title="Frequency (Hz)",
-            yaxis_title="Magnitude (Ω)",
+            title=dict(text="Magnitude vs Frequency", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Magnitude (Ω)", font=dict(size=14)), tickfont=dict(size=12)),
             template="plotly_white",
             height=int(self.app_height/2),
         )
@@ -571,9 +585,9 @@ class MainApp(QMainWindow):
         fig_phase = go.Figure()
         fig_phase.add_trace(go.Scatter(x=self.freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
         fig_phase.update_layout(
-            title="Phase vs Frequency",
-            xaxis_title="Frequency (Hz)",
-            yaxis_title="Phase (°)",
+            title=dict(text="Phase vs Frequency", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Phase (°)", font=dict(size=14)), tickfont=dict(size=12)),
             template="plotly_white",
             height=int(self.app_height/2),
         )
@@ -654,10 +668,9 @@ class MainApp(QMainWindow):
         fig_nyquist = go.Figure()
         fig_nyquist.add_trace(go.Scatter(x=real_vals, y=imag_vals, mode='markers+lines', name='Impedance'))
         fig_nyquist.update_layout(
-            title="Nyquist Plot (Real vs Imag)",
-            xaxis_title="Real(Z) [Ω]",
-            yaxis_title="Imag(Z) [Ω]",
-            yaxis=dict(scaleanchor="x", scaleratio=1),
+            title=dict(text="Nyquist Plot (Real vs Imag)", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Real(Z) [Ω]", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Imag(Z) [Ω]", font=dict(size=14)), tickfont=dict(size=12), scaleanchor="x", scaleratio=1),
             template="plotly_white",
             height=self.app_width/4.5,
         )
@@ -670,10 +683,9 @@ class MainApp(QMainWindow):
         mag_pad = 10000
         fig_mag.add_trace(go.Scatter(x=freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)', line=dict(color='blue')))
         fig_mag.update_layout(
-            title="Magnitude vs Frequency",
-            xaxis_title="Frequency (Hz)",
-            yaxis_title="Magnitude (Ω)",
-            yaxis=dict(range=[mag_min - mag_pad, mag_max + mag_pad]),
+            title=dict(text="Magnitude vs Frequency", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Magnitude (Ω)", font=dict(size=14)), tickfont=dict(size=12), range=[mag_min - mag_pad, mag_max + mag_pad]),
             template="plotly_white",
             height=self.app_width/4.5,
         )
@@ -683,10 +695,9 @@ class MainApp(QMainWindow):
         phase_max = max(phase_list)
         fig_phase.add_trace(go.Scatter(x=freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
         fig_phase.update_layout(
-            title="Phase vs Frequency",
-            xaxis_title="Frequency (Hz)",
-            yaxis_title="Phase (°)",
-            yaxis=dict(range=[phase_min - 5, phase_max + 5]),
+            title=dict(text="Phase vs Frequency", font=dict(size=18)),
+            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
+            yaxis=dict(title=dict(text="Phase (°)", font=dict(size=14)), tickfont=dict(size=12), range=[phase_min - 5, phase_max + 5]),
             template="plotly_white",
             height=self.app_width/4.5,
         )
