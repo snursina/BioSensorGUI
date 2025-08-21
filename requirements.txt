@@ -4,5 +4,9 @@ numpy 2.1.3
 pylink-square 1.6.0
 pyserial 3.5
 matplotlib 3.10.1
+sdv 1.25.0
+PyQt5 5.15.11
+plotly 6.2.0
 
 SEGGER J-Link installation (V788 was used at the time)
+com0com needed for simulator

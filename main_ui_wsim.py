@@ -3,6 +3,7 @@ import threading
 import serial
 import tempfile
 import math
+import time
 import serial.tools.list_ports
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout,
@@ -34,7 +35,6 @@ class LowPassFilter:
 
     def filter(self, new_sample: float) -> float:
         if self.filtered_value is None:
-            # Initialize with the first sample
             self.filtered_value = new_sample * self.factor
         else:
             self.filtered_value = (self.filtered_value - (self.filtered_value / self.factor)) + new_sample
@@ -49,20 +49,34 @@ class WorkerSignals(QObject):
     measurement_finished = pyqtSignal()
 
 class MeasurementThread(threading.Thread):
-    def __init__(self, ser, signals):
+    def __init__(self, ser, signals, simulator_mode=False):
         super().__init__()
         self.ser = ser
         self.signals = signals
+        self.simulator_mode = simulator_mode
         self._stop_flag = threading.Event()
 
     def run(self):
         def callback(line):
             self.signals.data_ready.emit(line)
 
-        from measure_plot import start_measurement
-        start_measurement(self.ser, duration_sec=None, line_callback=callback, stop_event=self._stop_flag)
-
-        self.signals.measurement_finished.emit()
+        if self.simulator_mode:
+            # Passive reader: forward whatever arrives from the simulator
+            try:
+                while not self._stop_flag.is_set():
+                    raw = self.ser.readline()
+                    if not raw:
+                        continue
+                    line = raw.decode("ascii", errors="ignore").strip()
+                    if line:
+                        callback(line)
+            finally:
+                self.signals.measurement_finished.emit()
+        else:
+            # Real device path
+            from measure_plot import start_measurement
+            start_measurement(self.ser, duration_sec=None, line_callback=callback, stop_event=self._stop_flag)
+            self.signals.measurement_finished.emit()
 
     def stop(self):
         self._stop_flag.set()
@@ -92,10 +106,6 @@ class MainApp(QMainWindow):
         y = screen_geometry.y() + (screen_geometry.height() - self.app_height) // 1.5
 
         self.setGeometry(int(x), int(y), self.app_width, self.app_height)
-        # screen_geometry = QGuiApplication.primaryScreen().availableGeometry()
-        # self.setGeometry(screen_geometry/2)
-        # self.showMaximized()
-        # self.setGeometry(100, 100, 1280, 1000)
 
         self.ser = None
         self.measurement_thread = None
@@ -115,6 +125,9 @@ class MainApp(QMainWindow):
         self.signals.status_update.connect(self.update_status)
         self.signals.measurement_finished.connect(self.on_measurement_finished)
 
+        # simulator detection flag
+        self.simulator_mode = False
+
         # === Central layout ===
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -123,7 +136,7 @@ class MainApp(QMainWindow):
         # === Sidebar tabs ===
         self.tab_list = QListWidget()
         self.tab_list.setFocusPolicy(Qt.NoFocus)
-        self.tab_list.setFixedWidth(int(self.app_width/6))#170)
+        self.tab_list.setFixedWidth(int(self.app_width/6))
         self.tab_list.addItem("Live Measurement")
         self.tab_list.addItem("Magnitude & Phase")
         self.tab_list.addItem("Load Data")
@@ -148,28 +161,20 @@ class MainApp(QMainWindow):
 
         # === Assemble ===
         sidebar_layout = QVBoxLayout()
-
-        # Add tab list to top
         sidebar_layout.addWidget(self.tab_list)
-
-        # Spacer to push logo to bottom
         sidebar_layout.addStretch()
 
-        # Add logo at bottom
         logo_label = QLabel()
         logo_pixmap = QPixmap("kidney_final.svg")
         logo_width = self.tab_list.width()*0.99
         logo_pixmap = logo_pixmap.scaled(int(logo_width), int(logo_width*0.9), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        #logo_pixmap = logo_pixmap.scaledToWidth(100, Qt.SmoothTransformation)
         logo_label.setPixmap(logo_pixmap)
         logo_label.setAlignment(Qt.AlignCenter)
         sidebar_layout.addWidget(logo_label)
 
-        # Wrap in a container widget
         sidebar_container = QWidget()
         sidebar_container.setLayout(sidebar_layout)
 
-        # Add sidebar and content to main layout
         main_layout.addWidget(sidebar_container, 0)
         main_layout.addWidget(self.stack, 1)
 
@@ -189,21 +194,20 @@ class MainApp(QMainWindow):
                 padding: 15px;
                 margin: 5px;
                 border-radius: 5px;
-                font-size: 11pt;              /* was 14px */
+                font-size: 11pt;
             }
             QListWidget::item:selected {
                 background-color: #0051a5;
                 color: white;
             }
             QLabel {
-                font-size: 11pt;              /* was 14px */
+                font-size: 11pt;
             }
             QPushButton {
                 background-color: #0051a5;
                 color: white;
                 border-radius: 5px;
                 padding: 6px 12px;
-                /* no font-size here; inherit the base font in points */
             }
             QPushButton:hover {
                 background-color: #1a63ad;
@@ -216,7 +220,6 @@ class MainApp(QMainWindow):
                 padding: 4px;
                 border: 1px solid #ccc;
                 border-radius: 4px;
-                /* let them inherit font in points */
             }
             QStatusBar {
                 background-color: #0051a5;
@@ -234,7 +237,7 @@ class MainApp(QMainWindow):
                 padding: 15px;
                 margin: 5px;
                 border-radius: 5px;
-                font-size: 11pt;              /* was 14px */
+                font-size: 11pt;
             }
             QListWidget::item:selected {
                 background-color: #0051a5;
@@ -307,9 +310,6 @@ class MainApp(QMainWindow):
         self.live_plot_view = QWebEngineView()
         layout.addWidget(self.live_plot_view)
 
-        #self.re_im_calc_label = QLabel()
-        #layout.addWidget(self.re_im_calc_label)
-
         hsave = QHBoxLayout()
         hsave.addWidget(QLabel("Save as:"))
         self.save_file_name = QLineEdit("sample_uM")
@@ -324,12 +324,9 @@ class MainApp(QMainWindow):
         layout.addLayout(hsave)
 
         tab1.setLayout(layout)
-        #self.tabs.addTab(tab1, "Live Measurement")
 
         self.init_live_plot()
-
         self.refresh_com_ports()
-
 
         return tab1
 
@@ -337,15 +334,12 @@ class MainApp(QMainWindow):
         tab2 = QWidget()
         layout = QVBoxLayout()
 
-        # Post-measurement plot
         self.post_plot_view_mag = QWebEngineView()
         self.post_plot_view_phase = QWebEngineView()
         layout.addWidget(self.post_plot_view_mag)
         layout.addWidget(self.post_plot_view_phase)
 
         tab2.setLayout(layout)
-        #self.tabs.addTab(tab2, "Magnitude & Phase")
-
         return tab2
 
     def init_tab_load_data(self):
@@ -365,8 +359,6 @@ class MainApp(QMainWindow):
         layout.addWidget(self.load_plot_view_phase)
 
         tab3.setLayout(layout)
-        #self.tabs.addTab(tab3, "Load Data")
-
         return tab3
 
     def refresh_com_ports(self):
@@ -375,6 +367,44 @@ class MainApp(QMainWindow):
         for port in ports:
             self.combo_com.addItem(port.device)
 
+    # ---- Simulator helpers ----
+    def _probe_simulator(self, timeout=0.6) -> bool:
+        """Listen briefly for SIM:HELLO banner."""
+        try:
+            if not self.ser:
+                return False
+            self.ser.reset_input_buffer()
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                raw = self.ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="ignore").strip()
+                if line.startswith("SIM:HELLO"):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _parse_live_line(self, line, calib_resistor=1000):
+        """Try real parser first; fallback to CSV 'real,imag,freq' (simulator)."""
+        try:
+            parsed = parse_line_calibrated(line, calib_resistor)
+            if parsed:
+                return parsed
+        except Exception:
+            pass
+        try:
+            parts = [p.strip() for p in line.strip().split(',')]
+            if len(parts) >= 3:
+                re_val = float(parts[0]); im_val = float(parts[1]); freq = float(parts[2])
+                mag = math.hypot(re_val, im_val)
+                phase = math.degrees(math.atan2(im_val, re_val))
+                return (freq, re_val, im_val, mag, phase)
+        except Exception:
+            return None
+        return None
+
     def connect_serial(self):
         selected_port = self.combo_com.currentText()
         if not selected_port:
@@ -382,12 +412,21 @@ class MainApp(QMainWindow):
             return
 
         try:
-            # Reset device before connecting
-            reset_via_pylink()
-
+            # Open first so we can detect a simulator banner
             self.ser = serial.Serial(selected_port, 115200, timeout=0.1)
-            self.update_status(f"Connected to {selected_port}")
-            self.btn_configure.setEnabled(True)
+
+            # Quick probe for simulator
+            self.simulator_mode = self._probe_simulator(timeout=0.6)
+
+            if self.simulator_mode:
+                self.update_status(f"Simulator detected on {selected_port}. Configure is bypassed.")
+                self.btn_configure.setEnabled(False)
+                self.btn_start.setEnabled(True)
+            else:
+                # Real device: reset + normal configure flow
+                reset_via_pylink()
+                self.update_status(f"Connected to {selected_port}")
+                self.btn_configure.setEnabled(True)
         except Exception as e:
             self.update_status(f"Failed to connect: {e}")
 
@@ -395,13 +434,16 @@ class MainApp(QMainWindow):
         if not self.ser or not self.ser.is_open:
             self.update_status("Serial port not connected.")
             return
+        if self.simulator_mode:
+            self.update_status("Simulator mode: configuration bypassed.")
+            self.btn_start.setEnabled(True)
+            return
         try:
             voltage = int(self.input_voltage.text())
             start_freq = int(self.input_start_freq.text())
             end_freq = int(self.input_end_freq.text())
             num_points = int(self.input_num_points.text())
-            if self.spacing_combo.currentText() == "Linear": log_spacing = False
-            else: log_spacing = True
+            log_spacing = (self.spacing_combo.currentText() != "Linear")
 
             config_eis(self.ser, voltage, start_freq, end_freq, num_points, log_spacing)
             self.update_status("Configuration done.")
@@ -428,10 +470,26 @@ class MainApp(QMainWindow):
 
         self.live_plot_view.page().runJavaScript("startNewRun();")
 
-        self.measurement_thread = MeasurementThread(self.ser, self.signals)
+        # Simulator handshake: ACK + START
+        if self.simulator_mode:
+            try:
+                self.ser.write(b"SIM:ACK\n")
+                self.ser.write(b"SIM:START\n")
+            except Exception:
+                pass
+
+        self.measurement_thread = MeasurementThread(self.ser, self.signals, simulator_mode=self.simulator_mode)
         self.measurement_thread.start()
 
     def stop_measurement(self):
+        # tell simulator to stop streaming
+        if self.simulator_mode and self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b"SIM:STOP\n")
+                self.btn_start.setEnabled(True)
+            except Exception:
+                pass
+
         if self.measurement_thread:
             self.measurement_thread.stop()
             self.measurement_thread.join()
@@ -439,7 +497,7 @@ class MainApp(QMainWindow):
 
         self.btn_stop.setEnabled(False)
         self.btn_start.setEnabled(True)
-        self.btn_configure.setEnabled(True)
+        self.btn_configure.setEnabled(True and not self.simulator_mode)
         self.btn_connect.setEnabled(True)
         self.btn_save.setEnabled(True)
 
@@ -453,18 +511,16 @@ class MainApp(QMainWindow):
 
     def handle_new_data(self, line):
         self.data_lines.append(line)
-
         if not self.live_plot_initialized:
-            pass#self.init_live_plot()
-
+            pass
         self.update_live_plot()
 
     def init_live_plot(self):
-        # Load the initial empty Plotly HTML with JS update function
+        # Plotly with run-based coloring + responsive + queue during init
         html = """
         <!DOCTYPE html>
-            <html>
-            <head>
+        <html>
+        <head>
             <meta charset="utf-8" />
             <title>Live Nyquist</title>
             <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
@@ -472,87 +528,102 @@ class MainApp(QMainWindow):
                 html, body { height: 100%; margin: 0; }
                 #plot { width: 100%; height: 100%; }
             </style>
-            </head>
-            <body>
+        </head>
+        <body>
             <div id="plot"></div>
             <script>
                 var runIndex = -1;
+                var plotReady = false;
+                var pendingPoints = [];
 
-                // Safe palette
                 var palette = (Plotly.d3 && Plotly.d3.schemeCategory10) ?
-                            Plotly.d3.schemeCategory10 :
-                            ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
-                            '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
+                              Plotly.d3.schemeCategory10 :
+                              ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+                               '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
 
                 var layout = {
-                title: { text: 'Live Nyquist Plot', font: { size: 18 } },
-                xaxis: { title: { text: 'Real(Z) [Ω]', font: { size: 14 } }, tickfont: { size: 12 } },
-                yaxis: { title: { text: 'Imag(Z) [Ω]', font: { size: 14 } }, tickfont: { size: 12 },
-                        scaleanchor: "x", scaleratio: 1 },
-                legend: { font: { size: 12 } },
-                template: 'plotly_white',
-                height: 700
+                    title: { text: 'Live Nyquist Plot', font: { size: 18 } },
+                    xaxis: { title: { text: 'Real(Z) [Ω]', font: { size: 14 } }, tickfont: { size: 12 }, autorange: true },
+                    yaxis: { title: { text: 'Imag(Z) [Ω]', font: { size: 14 } }, tickfont: { size: 12 },
+                             autorange: true, scaleanchor: "x", scaleratio: 1 },
+                    legend: { font: { size: 12 } },
+                    template: 'plotly_white',
+                    uirevision: 'live-nyquist',
+                    height: 700
                 };
 
-                Plotly.newPlot('plot', [], layout);
+                Plotly.newPlot('plot', [], layout).then(function () {
+                    plotReady = true;
+                    var plt = document.getElementById('plot');
+                    if ((!plt.data || !plt.data.length) && pendingPoints.length) {
+                        startNewRun();
+                    }
+                    for (var i = 0; i < pendingPoints.length; i++) {
+                        var p = pendingPoints[i];
+                        Plotly.extendTraces('plot', { x: [[p.x]], y: [[p.y]] }, [runIndex]);
+                    }
+                    pendingPoints.length = 0;
+                });
 
                 function startNewRun() {
-                runIndex += 1;
-                var color = palette[runIndex % palette.length];
-                var newTrace = {
-                    x: [],
-                    y: [],
-                    mode: 'lines+markers',
-                    name: 'Run ' + (runIndex + 1),
-                    marker: { color: color, size: 8 }
-                };
-                Plotly.addTraces('plot', [newTrace]);
-                return true; // lets PyQt callback know we are done
+                    if (!plotReady) { return false; }
+                    runIndex += 1;
+                    var color = palette[runIndex % palette.length];
+                    var newTrace = {
+                        x: [],
+                        y: [],
+                        mode: 'lines+markers',
+                        name: 'Run ' + (runIndex + 1),
+                        marker: { color: color, size: 8 }
+                    };
+                    Plotly.addTraces('plot', [newTrace]);
+                    return true;
                 }
 
                 function updateRun(newX, newY) {
-                // Safety: auto-start if no run exists yet
-                var plt = document.getElementById('plot');
-                if (runIndex < 0 || !plt.data || !plt.data.length) startNewRun();
+                    newX = +newX; newY = +newY;
+                    if (!plotReady) {
+                        pendingPoints.push({ x: newX, y: newY });
+                        return;
+                    }
+                    var plt = document.getElementById('plot');
+                    if (runIndex < 0 || !plt.data || !plt.data.length) {
+                        startNewRun();
+                    }
+                    Plotly.extendTraces('plot', { x: [[newX]], y: [[newY]] }, [runIndex]);
 
-                Plotly.extendTraces('plot', { x: [[newX]], y: [[newY]] }, [runIndex]);
-
-                // Optional cap for performance
-                var MAX_POINTS = 2000;
-                var d = plt.data[runIndex];
-                if (d.x.length > MAX_POINTS) {
-                    Plotly.restyle('plot', { x: [d.x.slice(-MAX_POINTS)], y: [d.y.slice(-MAX_POINTS)] }, [runIndex]);
-                }
+                    var MAX_POINTS = 2000;
+                    var d = plt.data[runIndex];
+                    if (d && d.x && d.x.length > MAX_POINTS) {
+                        Plotly.restyle('plot', {
+                            x: [d.x.slice(-MAX_POINTS)],
+                            y: [d.y.slice(-MAX_POINTS)]
+                        }, [runIndex]);
+                    }
                 }
 
                 function clearPlot() {
-                var plt = document.getElementById('plot');
-                if (plt.data && plt.data.length) {
-                    Plotly.deleteTraces('plot', Array.from({length: plt.data.length}, (_, i) => i));
-                }
-                runIndex = -1;
+                    var plt = document.getElementById('plot');
+                    if (plt.data && plt.data.length) {
+                        Plotly.deleteTraces('plot', Array.from({length: plt.data.length}, (_, i) => i));
+                    }
+                    runIndex = -1;
                 }
 
-                // Keep responsive
                 window.addEventListener('resize', () => {
-                Plotly.relayout('plot', { width: window.innerWidth, height: window.innerHeight });
+                    Plotly.relayout('plot', { width: window.innerWidth, height: window.innerHeight });
                 });
             </script>
-            </body>
-            </html>
+        </body>
+        </html>
         """
         self.live_plot_view.setHtml(html)
         self.live_plot_initialized = True
 
     def update_live_plot(self):
-        # Called on every new data line.
-        # Parse the latest data point and send to JS
-        calib_resistor = 1000  # same as before
-
-        # Parse only the last line to avoid lagging behind
+        calib_resistor = 1000
         line = self.data_lines[-1]
-
-        parsed = parse_line_calibrated(line, calib_resistor)
+        parsed = self._parse_live_line(line, calib_resistor=calib_resistor)
         if not parsed:
             return
 
@@ -561,20 +632,16 @@ class MainApp(QMainWindow):
         Zx_re = self.lp_filter_real.filter(Zx_re)
         Zx_im = self.lp_filter_imag.filter(Zx_im)
 
-        #self.re_im_calc_label.setText(f"Real: {Zx_re:.3f}, Capacity/Inductor: {(1/(freq*2*math.pi*(Zx_im)))}")
-        if Zx_im > 0: print(f"Real: {Zx_re:.3f}, Capacity: {(1/(freq*2*math.pi*(Zx_im)))}")
-        else: print(f"Real: {Zx_re:.3f}, Inductor: {(-Zx_im/(freq*2*math.pi))}")
+        if Zx_im > 0:
+            print(f"Real: {Zx_re:.3f}, Capacity: {(1/(freq*2*math.pi*(Zx_im)))}")
+        else:
+            print(f"Real: {Zx_re:.3f}, Inductor: {(-Zx_im/(freq*2*math.pi))}")
         
-        # Append locally for logging
         self.live_real.append(Zx_re)
         self.live_imag.append(Zx_im)
 
-        # Send just this point to JS plot
         js_code = f"updateRun({Zx_re:.3f}, {Zx_im:.3f});"
         self.live_plot_view.page().runJavaScript(js_code)
-        # js_code = f"updatePlot({Zx_re:.3f}, {Zx_im:.3f});"
-        # self.live_plot_view.page().runJavaScript(js_code)
-
 
     def on_measurement_finished(self):
         self.freq_list = []
@@ -583,13 +650,11 @@ class MainApp(QMainWindow):
 
         calib_resistor = 1000
         for line in self.data_lines:
-            parsed = parse_line_calibrated(line, calib_resistor)
+            parsed = self._parse_live_line(line, calib_resistor)
             if parsed:
                 freq, _, _, mag, phase = parsed
-
                 mag = self.lp_filter_mag.filter(mag)
                 phase = self.lp_filter_phase.filter(phase)
-
                 self.freq_list.append(freq)
                 mag_list.append(mag)
                 phase_list.append(phase)
@@ -602,7 +667,6 @@ class MainApp(QMainWindow):
         mag_max = max(mag_list)
         y_range_mag = [max(0, mag_min - 10000), mag_max + mag_max*0.5]
 
-        # Plot Magnitude vs Frequency
         fig_mag = go.Figure()
         fig_mag.add_trace(go.Scatter(x=self.freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)'))
         fig_mag.update_layout(
@@ -614,7 +678,6 @@ class MainApp(QMainWindow):
         )
         fig_mag.update_yaxes(range=y_range_mag)
 
-        # Plot Phase vs Frequency
         fig_phase = go.Figure()
         fig_phase.add_trace(go.Scatter(x=self.freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
         fig_phase.update_layout(
@@ -626,7 +689,6 @@ class MainApp(QMainWindow):
         )
         fig_phase.update_yaxes(range=[-190, 190])
 
-        # Write temp files and load them into QWebEngineView
         tmp_dir = tempfile.gettempdir()
         mag_path = os.path.join(tmp_dir, "mag_plot.html")
         phase_path = os.path.join(tmp_dir, "phase_plot.html")
@@ -642,14 +704,12 @@ class MainApp(QMainWindow):
 
         self.disconnect_serial()
         with open("measurement_log.txt", "w") as f:
-            for real, imag, freq in zip(self.live_real, self.live_imag, self.freq_list):#, mag_list, phase_list):
+            for real, imag, freq in zip(self.live_real, self.live_imag, self.freq_list):
                 f.write(f"{real},{imag},{freq}\n")
         self.btn_save.setEnabled(True)
-        #time.sleep(0.5)
         self.connect_serial()
 
         self.update_status("Measurement finished and plots updated.")
-
 
     def update_status(self, msg):
         self.status_bar.showMessage(msg)
@@ -657,15 +717,20 @@ class MainApp(QMainWindow):
     def disconnect_serial(self):
         if self.ser and self.ser.is_open:
             try:
+                # send stop to simulator on disconnect just in case
+                if self.simulator_mode:
+                    try:
+                        self.ser.write(b"SIM:STOP\n")
+                    except Exception:
+                        pass
                 self.ser.close()
                 self.update_status("Serial port disconnected.")
             except Exception as e:
                 self.update_status(f"Error closing serial port: {e}")
         self.ser = None
-        # Update buttons
         self.btn_connect.setEnabled(True)
         self.btn_configure.setEnabled(False)
-        self.btn_start.setEnabled(False)
+        if not self.simulator_mode: self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
 
     def load_data_file(self):
@@ -697,7 +762,6 @@ class MainApp(QMainWindow):
                 except ValueError:
                     continue
 
-        # Nyquist Plot
         fig_nyquist = go.Figure()
         fig_nyquist.add_trace(go.Scatter(x=real_vals, y=imag_vals, mode='markers+lines', name='Impedance'))
         fig_nyquist.update_layout(
@@ -707,9 +771,7 @@ class MainApp(QMainWindow):
             template="plotly_white",
             height=self.app_width/4.5,
         )
-        #html_nyquist = pio.to_html(fig_nyquist, full_html=False)
 
-        # Mag and Phase Plot
         fig_mag = go.Figure()
         mag_min = min(mag_list)
         mag_max = max(mag_list)
@@ -735,7 +797,6 @@ class MainApp(QMainWindow):
             height=self.app_width/4.5,
         )
 
-        # Write temp files and load them into QWebEngineView
         tmp_dir = tempfile.gettempdir()
         nyq_path = os.path.join(tmp_dir, "nyq_plot_load.html")
         mag_path = os.path.join(tmp_dir, "mag_plot_load.html")
@@ -770,7 +831,7 @@ class MainApp(QMainWindow):
                 height: window.innerHeight
             });
         """)
-    
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
