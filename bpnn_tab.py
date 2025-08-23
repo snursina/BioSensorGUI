@@ -13,11 +13,13 @@ from PyQt5.QtGui import QStandardItemModel, QStandardItem
 from PyQt5.QtCore import Qt
 
 # ML deps
+# (torch imports kept for backward-compat loading; not used for training now)
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
 import joblib
 
 
@@ -36,7 +38,7 @@ else:
 # --------------------------------------------------------------
 
 
-# ---------------------- BPNN model ----------------------------
+# ---------------------- BPNN (unused but kept) ----------------
 class BPNet(nn.Module):
     def __init__(self, input_size=30, p_drop=0.1):
         super(BPNet, self).__init__()
@@ -58,14 +60,12 @@ class BPNet(nn.Module):
 
 class BPNNTab(QWidget):
     """
-    Backprop NN tab (improved):
-      - Loads .txt files named: sample_<conc>[uM]_*.txt (conc in µM; unit optional).
-      - Each row is real,imag,freq (commas or whitespace OK).
-      - Builds a global frequency grid; interpolates each file to N points.
-      - Features = [re, im, freq] × N → fixed input size.
-      - Trains a deeper BP model with dropout & early stopping.
-      - Targets default to log10(concentration + 1) for stability; predictions shown in µM.
-      - Saves/loads model + scalers + grid in file_path/.aixsense_bpnn.
+    Same UI/vars as before.
+    Changes:
+      - Uses RandomForestRegressor for training/prediction (keeps self.model, scalers, grid).
+      - Global grid built from overlap (percentiles) to avoid clamping.
+      - Fit scalers on TRAIN ONLY (no leakage).
+      - Model saved/loaded via joblib to the same paths.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -114,16 +114,16 @@ class BPNNTab(QWidget):
         self.spnPoints.setValue(30)
         row2.addWidget(self.spnPoints)
 
-        row2.addWidget(QLabel("Epochs:"))
-        self.spnEpochs = QSpinBox()
-        self.spnEpochs.setRange(10, 10000)
-        self.spnEpochs.setValue(800)   # a bit more with early stopping
-        row2.addWidget(self.spnEpochs)
+        # row2.addWidget(QLabel("Epochs:"))
+        # self.spnEpochs = QSpinBox()
+        # self.spnEpochs.setRange(10, 10000)
+        # self.spnEpochs.setValue(800)
+        # row2.addWidget(self.spnEpochs)
 
-        row2.addWidget(QLabel("LR:"))
-        self.edLR = QLineEdit("2e-3")
-        self.edLR.setMaximumWidth(80)
-        row2.addWidget(self.edLR)
+        # row2.addWidget(QLabel("LR:"))
+        # self.edLR = QLineEdit("2e-3")
+        # self.edLR.setMaximumWidth(80)
+        # row2.addWidget(self.edLR)
 
         row2.addWidget(QLabel("Test size:"))
         self.edTest = QLineEdit("0.2")
@@ -150,14 +150,7 @@ class BPNNTab(QWidget):
     # -------------------- parsing helpers ---------------------
 
     def extract_concentration_from_filename(self, filename: str):
-        """
-        Accept BOTH:
-          sample_<number>uM_<index>.txt
-          sample_<number>_<index>.txt   (unit optional; interpreted as µM)
-        Also accepts decimals with comma or dot.
-        """
         base = os.path.splitext(os.path.basename(filename))[0]
-        #m = re.search(r'(\d+(?:[.,]\d+)?)\s*(nM|uM|µM|mM|M)\b', base, re.IGNORECASE)
         m = re.search(r'^sample_(\d+(?:[.,]\d+)?)(?:[\s_]*uM)?(?:_|$)', base, re.IGNORECASE)
         if not m:
             return None
@@ -165,12 +158,6 @@ class BPNNTab(QWidget):
         return val  # µM
 
     def _read_sample_df(self, path: str) -> pd.DataFrame:
-        """
-        Robust reader for real,imag,freq .txt:
-          - try strict CSV (commas), else flexible sep (commas or whitespace)
-          - keep first 3 numeric cols, named real,imag,freq
-          - drop bad rows; sort by freq; drop duplicate freq
-        """
         df = None
         try:
             df = pd.read_csv(path, header=None)
@@ -191,25 +178,29 @@ class BPNNTab(QWidget):
         return df
 
     def _build_global_grid(self, fmin_all, fmax_all, n_points: int):
-        """
-        Build a global grid spanning [min_of_all_mins, max_of_all_maxes].
-        If strictly positive and spread is wide, use logspace; else linspace.
-        """
-        f_low = float(np.min(fmin_all))
-        f_high = float(np.max(fmax_all))
-        if not np.isfinite(f_low) or not np.isfinite(f_high) or f_high <= f_low:
+        fmin_all = np.asarray(fmin_all, dtype=float)
+        fmax_all = np.asarray(fmax_all, dtype=float)
+
+        f_low_p = np.percentile(fmin_all, 90)   # robust overlap lower bound
+        f_high_p = np.percentile(fmax_all, 10)  # robust overlap upper bound
+
+        if not np.isfinite(f_low_p) or not np.isfinite(f_high_p):
             return None
-        if f_low > 0 and f_high / f_low > 1.5:
-            grid = np.logspace(np.log10(f_low), np.log10(f_high), n_points)
+
+        if f_high_p <= f_low_p:
+            f_low_p  = float(np.max(fmin_all))
+            f_high_p = float(np.min(fmax_all))
+            if f_high_p <= f_low_p:
+                return None
+
+        if f_low_p > 0 and (f_high_p / f_low_p) > 1.5:
+            grid = np.logspace(np.log10(f_low_p), np.log10(f_high_p), n_points)
         else:
-            grid = np.linspace(f_low, f_high, n_points)
+            grid = np.linspace(f_low_p, f_high_p, n_points)
         return grid.astype(float)
+    
 
     def _interp_to_grid_clamped(self, df: pd.DataFrame, grid: np.ndarray):
-        """
-        Interpolate real, imag to given grid.
-        Values outside the sample's range are clamped to the edge (np.interp behavior).
-        """
         f = df["freq"].to_numpy(float)
         r = df["real"].to_numpy(float)
         i = df["imag"].to_numpy(float)
@@ -218,7 +209,6 @@ class BPNNTab(QWidget):
         return real_g, imag_g
 
     def _flatten_features(self, real_g, imag_g, grid):
-        """Turn arrays into [re1,im1,f1, re2,im2,f2, ...]."""
         return np.column_stack([real_g, imag_g, grid]).reshape(-1)
 
     # ----------------------- UI actions -----------------------
@@ -269,7 +259,7 @@ class BPNNTab(QWidget):
             X_list.append(vec)
 
         self.X = np.vstack(X_list).astype(float)
-        self.y_linear = np.array(concs, dtype=float).reshape(-1, 1)  # keep original µM for metrics later
+        self.y_linear = np.array(concs, dtype=float).reshape(-1, 1)  # µM for metrics later
         self.ref_grid = grid.astype(float)
         self.input_size = self.X.shape[1]
 
@@ -292,8 +282,11 @@ class BPNNTab(QWidget):
             f"Input size: {self.input_size} features (3×N)")
 
     def _try_load_model_files(self):
-        """Load model + scalers + grid from disk; return bool success."""
-        if not (self.model_path.exists() and self.xs_path.exists() and self.ys_path.exists() and self.grid_path.exists()):
+        """
+        Load model + scalers + grid from disk.
+        Now prefers joblib (RandomForest); falls back to torch for legacy .pt.
+        """
+        if not (self.xs_path.exists() and self.ys_path.exists() and self.grid_path.exists() and self.model_path.exists()):
             return False
         try:
             meta = json.loads(self.grid_path.read_text())
@@ -301,9 +294,17 @@ class BPNNTab(QWidget):
             in_size = int(meta["input_size"])
             use_log = bool(meta.get("use_log_target", True))
 
-            model = BPNet(input_size=in_size)
-            model.load_state_dict(torch.load(str(self.model_path), map_location="cpu"))
-            model.eval()
+            # Try joblib (RF) first
+            try:
+                model = joblib.load(self.model_path)
+                # minimal check: RF has predict attribute
+                _ = getattr(model, "predict")
+            except Exception:
+                # Fallback: legacy torch model (won't be used after RF retrain)
+                model = BPNet(input_size=in_size)
+                model.load_state_dict(torch.load(str(self.model_path), map_location="cpu"))
+                model.eval()
+
             xs = joblib.load(self.xs_path)
             ys = joblib.load(self.ys_path)
 
@@ -327,9 +328,8 @@ class BPNNTab(QWidget):
     # --------------------- training / eval --------------------
 
     def _transform_y(self, y_linear: np.ndarray, use_log: bool):
-        """Return (y_transformed, forward_fn, inverse_fn)."""
+        """Return (y_transformed, inverse_fn)."""
         if use_log:
-            # log10(conc + 1) for stability and zero-safe
             y_t = np.log10(np.maximum(0.0, y_linear) + 1.0)
             def inv_fn(y_t_unscaled):
                 return np.maximum(0.0, (10.0 ** y_t_unscaled) - 1.0)
@@ -343,75 +343,46 @@ class BPNNTab(QWidget):
             QMessageBox.information(self, "Load data", "Load a folder first (to build the global grid).")
             return
 
-        # parse hyperparams
+        # parse hyperparams (kept for UI compatibility; RF ignores epochs/LR)
         try:
-            epochs = int(self.spnEpochs.value())
-            lr = float(eval(self.edLR.text(), {}, {}))   # allow "1e-3"
+            epochs = 100#int(self.spnEpochs.value())
+            lr = 0.2#float(eval(self.edLR.text(), {}, {}))   # unused by RF
             test_size = float(self.edTest.text())
             use_log = bool(self.chkLogTarget.isChecked())
         except Exception:
             QMessageBox.warning(self, "Config", "Invalid training parameters.")
             return
 
-        # X scaler
-        x_scaler = StandardScaler()
-        X_scaled = x_scaler.fit_transform(self.X)
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-
-        # y transform + scaler
+        # ----- targets transform -----
         y_t, inv_y = self._transform_y(self.y_linear, use_log=use_log)
-        y_scaler = StandardScaler()
-        y_scaled = y_scaler.fit_transform(y_t)
-        y_tensor = torch.tensor(y_scaled, dtype=torch.float32)
 
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_tensor, y_tensor, test_size=test_size, random_state=42
+        # ----- split BEFORE fitting scalers (to prevent leakage) -----
+        X_train_raw, X_val_raw, y_train_raw, y_val_raw = train_test_split(
+            self.X, y_t, test_size=test_size, random_state=42
         )
 
-        model = BPNet(input_size=self.input_size, p_drop=0.1)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)  # L2 regularization
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
+        # ----- fit scalers on TRAIN ONLY, then transform both -----
+        x_scaler = StandardScaler().fit(X_train_raw)
+        X_train = x_scaler.transform(X_train_raw)
+        X_val   = x_scaler.transform(X_val_raw)
 
-        # Early stopping
-        best_state = copy.deepcopy(model.state_dict())
-        best_val = float("inf")
-        patience = 60
-        bad = 0
+        y_scaler = StandardScaler().fit(y_train_raw)
+        y_train = y_scaler.transform(y_train_raw).ravel()
+        y_val   = y_scaler.transform(y_val_raw).ravel()
 
-        for ep in range(epochs):
-            model.train()
-            optimizer.zero_grad()
-            out = model(X_train)
-            loss = criterion(out, y_train)
-            loss.backward()
-            optimizer.step()
-
-            # val
-            model.eval()
-            with torch.no_grad():
-                val_out = model(X_val)
-                val_loss = criterion(val_out, y_val).item()
-            scheduler.step(val_loss)
-
-            if val_loss + 1e-8 < best_val:
-                best_val = val_loss
-                best_state = copy.deepcopy(model.state_dict())
-                bad = 0
-            else:
-                bad += 1
-                if bad >= patience:
-                    break  # early stop
-
-        # load best
-        model.load_state_dict(best_state)
-        model.eval()
+        # ----- RandomForestRegressor -----
+        model = RandomForestRegressor(
+            n_estimators=400,
+            max_depth=None,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(X_train, y_train)
 
         # evaluation on validation set in µM
-        with torch.no_grad():
-            y_val_pred_scaled = model(X_val).numpy()
+        y_val_pred_scaled = model.predict(X_val).reshape(-1, 1)
         y_val_pred_t = y_scaler.inverse_transform(y_val_pred_scaled)
-        y_val_true_t = y_scaler.inverse_transform(y_val.numpy())
+        y_val_true_t = y_scaler.inverse_transform(y_val.reshape(-1, 1))
 
         y_val_pred = inv_y(y_val_pred_t)
         y_val_true = inv_y(y_val_true_t)
@@ -419,17 +390,17 @@ class BPNNTab(QWidget):
         mae = float(np.mean(np.abs(y_val_true.flatten() - y_val_pred.flatten())))
         rmse = float(np.sqrt(np.mean((y_val_true.flatten() - y_val_pred.flatten())**2)))
 
-        # save artifacts + grid + settings
+        # save artifacts + grid + settings (use joblib for model)
         saved = False
         try:
-            torch.save(model.state_dict(), str(self.model_path))
+            joblib.dump(model, str(self.model_path))
             joblib.dump(x_scaler, str(self.xs_path))
             joblib.dump(y_scaler, str(self.ys_path))
             meta = {
                 "grid": self.ref_grid.tolist(),
                 "input_size": int(self.input_size),
                 "use_log_target": bool(use_log),
-                "note": "global grid; features are [real,imag,freq] per point"
+                "note": "overlap grid; features are [real,imag,freq] per point; RF model"
             }
             self.grid_path.write_text(json.dumps(meta))
             saved = True
@@ -441,16 +412,50 @@ class BPNNTab(QWidget):
         self.x_scaler = x_scaler
         self.y_scaler = y_scaler
 
-        msg = (f"Trained on {len(X_train)} / tested on {len(X_val)} samples.\n"
+        msg = (f"Trained RF on {len(X_train)} / tested on {len(X_val)} samples.\n"
                f"MAE: {mae:.3f} µM   RMSE: {rmse:.3f} µM\n"
                f"Grid: {len(self.ref_grid)} points, [{self.ref_grid.min():.6g} .. {self.ref_grid.max():.6g}]")
         if saved:
             msg += f"\nSaved model + scalers + grid to:\n{self.save_dir}"
         QMessageBox.information(self, "Training complete", msg)
 
+        # --- Diagnostics: per-concentration RMSE/MAE and CSV export ---
+        y_val_true_um = y_val_true.flatten()
+        y_val_pred_um = y_val_pred.flatten()
+
+        # Per unique concentration (rounded to 1 µM just in case)
+        import numpy as _np
+        def _rmse(a,b): return float(_np.sqrt(_np.mean((a-b)**2)))
+        def _mae(a,b):  return float(_np.mean(_np.abs(a-b)))
+
+        vals = []
+        for c in sorted(_np.unique(_np.round(y_val_true_um, 6))):
+            m = (abs(y_val_true_um - c) < 1e-6)
+            if m.sum() >= 1:
+                vals.append({
+                    "conc_uM": float(c),
+                    "n": int(m.sum()),
+                    "rmse_uM": _rmse(y_val_true_um[m], y_val_pred_um[m]),
+                    "mae_uM":  _mae (y_val_true_um[m], y_val_pred_um[m]),
+                })
+
+        # Save validation predictions for a quick look
+        import pandas as _pd
+        pred_df = _pd.DataFrame({
+            "y_true_uM": y_val_true_um,
+            "y_pred_uM": y_val_pred_um
+        })
+        pred_csv_path = str(self.save_dir / "val_predictions.csv")
+        pred_df.to_csv(pred_csv_path, index=False)
+
+        # Add brief per-class summary to the message
+        per_class_summary = "\n".join([f"  {v['conc_uM']:.0f} µM  (n={v['n']}):  RMSE {v['rmse_uM']:.1f}  MAE {v['mae_uM']:.1f}" for v in vals])
+        msg += f"\n\nPer-concentration validation:\n{per_class_summary}\nSaved validation preds: {pred_csv_path}"
+
+
     # ----------------------- prediction -----------------------
 
-    def _predict_single(self, path: str):
+    def predict_single(self, path: str):
         if self.ref_grid is None or self.model is None or self.x_scaler is None or self.y_scaler is None:
             if not self._try_load_model_files():
                 QMessageBox.information(self, "Model", "Train or load a model first.")
@@ -466,12 +471,9 @@ class BPNNTab(QWidget):
 
         X_sample = np.array(vec, dtype=float).reshape(1, -1)
         X_scaled = self.x_scaler.transform(X_sample)
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
 
-        # infer
-        self.model.eval()
-        with torch.no_grad():
-            y_pred_scaled = self.model(X_tensor).numpy()
+        # infer (RF)
+        y_pred_scaled = self.model.predict(X_scaled).reshape(-1, 1)
         y_pred_t = self.y_scaler.inverse_transform(y_pred_scaled)
 
         # invert log if needed
@@ -488,7 +490,7 @@ class BPNNTab(QWidget):
         )
         if not sample_path:
             return
-        pred = self._predict_single(sample_path)
+        pred = self.predict_single(sample_path)
         if pred is None:
             return
         QMessageBox.information(self, "Prediction", f"Predicted concentration:\n{pred:.2f} µM")

@@ -142,7 +142,7 @@ class MainApp(QMainWindow):
         self.tab_list.addItem("Load Data")
         self.tab_list.addItem("Curve Fit")
         self.tab_list.addItem("CTGAN")
-        self.tab_list.addItem("BPNN")
+        self.tab_list.addItem("Random Forest")
         self.tab_list.setCurrentRow(0)
 
         # === Stacked content ===
@@ -163,6 +163,13 @@ class MainApp(QMainWindow):
         sidebar_layout = QVBoxLayout()
         sidebar_layout.addWidget(self.tab_list)
         sidebar_layout.addStretch()
+
+        self.last_prediction = QPushButton()
+        font = self.last_prediction.font()
+        font.setPointSize(11)
+        self.last_prediction.setFont(font)
+        self.last_prediction.setText(f"Creatinine Concentration:\n---")
+        sidebar_layout.addWidget(self.last_prediction)
 
         logo_label = QLabel()
         logo_pixmap = QPixmap("kidney_final.svg")
@@ -311,6 +318,10 @@ class MainApp(QMainWindow):
         layout.addWidget(self.live_plot_view)
 
         hsave = QHBoxLayout()
+        #hsave.addWidget(QLabel("Prediction:"))
+        #self.prediction_box = QPushButton("Prediction: ---")
+        #self.prediction_box.setEnabled(False)
+        #hsave.addWidget(self.prediction_box)
         hsave.addWidget(QLabel("Save as:"))
         self.save_file_name = QLineEdit("sample_uM")
         self.btn_save = QPushButton("Save Measurement")
@@ -502,7 +513,7 @@ class MainApp(QMainWindow):
         self.btn_save.setEnabled(True)
 
     def save_measurement(self):
-        with open(os.path.join(file_path, "calibration_data/" + self.save_file_name.text().strip() + ".txt"), "w") as f:
+        with open(os.path.join(file_path, "saved_data/" + self.save_file_name.text().strip() + ".txt"), "w") as f:
             for freq, real, imag in zip(self.freq_list, self.live_real, self.live_imag):
                 f.write(f"{real},{imag}, {freq}\n")
 
@@ -703,13 +714,18 @@ class MainApp(QMainWindow):
         self.post_plot_view_phase.load(QUrl.fromLocalFile(phase_path))
 
         self.disconnect_serial()
-        with open("measurement_log.txt", "w") as f:
+        with open(os.path.join(file_path, "measurement_log.txt"), "w") as f:
             for real, imag, freq in zip(self.live_real, self.live_imag, self.freq_list):
                 f.write(f"{real},{imag},{freq}\n")
         self.btn_save.setEnabled(True)
         self.connect_serial()
 
-        self.update_status("Measurement finished and plots updated.")
+        try:
+            if self.bpnn_tab.model is None: self.bpnn_tab.btnLoadModel.click()
+            pred = self.bpnn_tab.predict_single(os.path.join(file_path, "measurement_log.txt"))
+            self.last_prediction.setText(f"Creatinine Concentration:\n{pred:.2f} µM")
+            self.update_status("Measurement finished and prediction updated.")
+        except: self.update_status("Measurement finished but prediction cannot be updated.")
 
     def update_status(self, msg):
         self.status_bar.showMessage(msg)
@@ -815,7 +831,14 @@ class MainApp(QMainWindow):
         self.load_plot_view_mag.load(QUrl.fromLocalFile(mag_path))
         self.load_plot_view_phase.load(QUrl.fromLocalFile(phase_path))
 
-        self.update_status("Plots updated.")
+        try:
+            if self.bpnn_tab.model is None: self.bpnn_tab.btnLoadModel.click()
+            pred = self.bpnn_tab.predict_single(file_path)
+            self.last_prediction.setText(f"Creatinine Concentration:\n{pred:.2f} µM")
+            self.update_status("Plots and prediction updated.")
+        except: self.update_status("Plots updated but prediction cannot be updated.")
+
+        #self.update_status("Plots updated.")
 
     def clear_filters(self):
         self.lp_filter_real.clear()
