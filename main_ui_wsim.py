@@ -4,12 +4,18 @@ import serial
 import tempfile
 import math
 import time
+
+# try:
+#     import pyi_splash
+# except Exception:
+#     pyi_splash = None
+
 import serial.tools.list_ports
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QLineEdit, QTabWidget, QTextEdit, QFileDialog
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, pyqtSlot, QUrl
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, pyqtSlot, QUrl, QTimer
 import plotly.graph_objs as go
 from plotly import io as pio
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # Requires PyQtWebEngine
@@ -19,7 +25,7 @@ from measure_plot import (
     reset_via_pylink, config_eis, start_measurement, parse_line_calibrated
 )
 from calibration_tab import CalibrationTab
-from ctgan_tab import CTGANTab
+#from ctgan_tab import CTGANTab
 from bpnn_tab import BPNNTab
 
 if hasattr(sys, "_MEIPASS"): application_path = sys._MEIPASS
@@ -141,7 +147,7 @@ class MainApp(QMainWindow):
         self.tab_list.addItem("Magnitude & Phase")
         self.tab_list.addItem("Load Data")
         self.tab_list.addItem("Curve Fit")
-        self.tab_list.addItem("CTGAN")
+        #self.tab_list.addItem("CTGAN")
         self.tab_list.addItem("Random Forest")
         self.tab_list.setCurrentRow(0)
 
@@ -152,8 +158,8 @@ class MainApp(QMainWindow):
         self.stack.addWidget(self.init_tab_load_data())
         self.calibration_tab = CalibrationTab(self)
         self.stack.addWidget(self.calibration_tab)
-        self.ctgan_tab = CTGANTab(self)
-        self.stack.addWidget(self.ctgan_tab)
+        #self.ctgan_tab = CTGANTab(self)
+        #self.stack.addWidget(self.ctgan_tab)
         self.bpnn_tab = BPNNTab(self)
         self.stack.addWidget(self.bpnn_tab)
 
@@ -357,17 +363,53 @@ class MainApp(QMainWindow):
         tab3 = QWidget()
         layout = QVBoxLayout()
 
+        # Buttons row
+        hbuttons = QHBoxLayout()
         self.btn_load_file = QPushButton("Load Measurement Log")
         self.btn_load_file.clicked.connect(self.load_data_file)
-        layout.addWidget(self.btn_load_file)
+        hbuttons.addWidget(self.btn_load_file)
 
+        self.btn_clear_nyquist = QPushButton("Clear Plot")
+        self.btn_clear_nyquist.clicked.connect(self.clear_nyquist_plot)
+        hbuttons.addWidget(self.btn_clear_nyquist)
+
+        layout.addLayout(hbuttons)
+
+        # Nyquist Plot View
         self.nyquist_plot_view = QWebEngineView()
-        self.load_plot_view_mag = QWebEngineView()
-        self.load_plot_view_phase = QWebEngineView()
-        
         layout.addWidget(self.nyquist_plot_view)
-        layout.addWidget(self.load_plot_view_mag)
-        layout.addWidget(self.load_plot_view_phase)
+
+        # Initialize empty Nyquist plot
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8" />
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>html, body { height:100%; margin:0; }</style>
+        </head>
+        <body>
+            <div id="plot" style="width:100%; height:100%;"></div>
+            <script>
+                var layout = {
+                    title: { text: "Nyquist Plot (Real vs Imag)", font: { size: 18 } },
+                    xaxis: { title: { text: "Real(Z) [Ω]", font: { size: 14 } }, tickfont: { size: 12 } },
+                    yaxis: { title: { text: "Imag(Z) [Ω]", font: { size: 14 } }, tickfont: { size: 12 }, scaleanchor: "x", scaleratio: 1 },
+                    template: "plotly_white",
+                    legend: { font: { size: 12 } },
+                    width: 1600,
+                    height: 900
+                };
+                Plotly.newPlot("plot", [], layout);
+
+                function clearPlot() {
+                    Plotly.deleteTraces("plot", Array.from({length: document.getElementById("plot").data.length}, (_, i) => i));
+                }
+            </script>
+        </body>
+        </html>
+        """
+        self.nyquist_plot_view.setHtml(html)
 
         tab3.setLayout(layout)
         return tab3
@@ -748,16 +790,17 @@ class MainApp(QMainWindow):
         self.btn_configure.setEnabled(False)
         if not self.simulator_mode: self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
+        
+    def clear_nyquist_plot(self):
+        self.nyquist_plot_view.page().runJavaScript("clearPlot();")
+        self.update_status("Nyquist plot cleared.")
 
     def load_data_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Measurement Log", "", "Text Files (*.txt *.log);;All Files (*)")
         if not file_path:
             return
 
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-
-        real_vals, imag_vals, freq_list, mag_list, phase_list= [], [], [], [], []
+        real_vals, imag_vals = [], []
         with open(file_path, "r") as f:
             for line in f:
                 parts = line.strip().split(',')
@@ -766,79 +809,24 @@ class MainApp(QMainWindow):
                 try:
                     real = float(parts[0])
                     imag = float(parts[1])
-                    freq = float(parts[2])
-                    mag = float(math.sqrt(real**2 + imag**2))
-                    phase = float(math.degrees(math.atan2(imag, real)))
-
-                    freq_list.append(freq)
                     real_vals.append(real)
                     imag_vals.append(imag)
-                    mag_list.append(mag)
-                    phase_list.append(phase)
                 except ValueError:
                     continue
 
-        fig_nyquist = go.Figure()
-        fig_nyquist.add_trace(go.Scatter(x=real_vals, y=imag_vals, mode='markers+lines', name='Impedance'))
-        fig_nyquist.update_layout(
-            title=dict(text="Nyquist Plot (Real vs Imag)", font=dict(size=18)),
-            xaxis=dict(title=dict(text="Real(Z) [Ω]", font=dict(size=14)), tickfont=dict(size=12)),
-            yaxis=dict(title=dict(text="Imag(Z) [Ω]", font=dict(size=14)), tickfont=dict(size=12), scaleanchor="x", scaleratio=1),
-            template="plotly_white",
-            height=self.app_width/4.5,
-        )
+        # Build JS trace
+        import json, os
+        trace_data = {
+            "x": real_vals,
+            "y": imag_vals,
+            "mode": "markers+lines",
+            "name": os.path.basename(file_path)  # label = filename
+        }
+        js_code = f"Plotly.addTraces('plot', [{json.dumps(trace_data)}]);"
+        self.nyquist_plot_view.page().runJavaScript(js_code)
 
-        fig_mag = go.Figure()
-        mag_min = min(mag_list)
-        mag_max = max(mag_list)
-        mag_pad = 10000
-        fig_mag.add_trace(go.Scatter(x=freq_list, y=mag_list, mode='lines+markers', name='Magnitude (Ω)', line=dict(color='blue')))
-        fig_mag.update_layout(
-            title=dict(text="Magnitude vs Frequency", font=dict(size=18)),
-            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
-            yaxis=dict(title=dict(text="Magnitude (Ω)", font=dict(size=14)), tickfont=dict(size=12), range=[mag_min - mag_pad, mag_max + mag_pad]),
-            template="plotly_white",
-            height=self.app_width/4.5,
-        )
+        self.update_status(f"Added data from {os.path.basename(file_path)}")
 
-        fig_phase = go.Figure()
-        phase_min = min(phase_list)
-        phase_max = max(phase_list)
-        fig_phase.add_trace(go.Scatter(x=freq_list, y=phase_list, mode='lines+markers', name='Phase (°)', line=dict(color='orange')))
-        fig_phase.update_layout(
-            title=dict(text="Phase vs Frequency", font=dict(size=18)),
-            xaxis=dict(title=dict(text="Frequency (Hz)", font=dict(size=14)), tickfont=dict(size=12)),
-            yaxis=dict(title=dict(text="Phase (°)", font=dict(size=14)), tickfont=dict(size=12), range=[phase_min - 5, phase_max + 5]),
-            template="plotly_white",
-            height=self.app_width/4.5,
-        )
-
-        tmp_dir = tempfile.gettempdir()
-        nyq_path = os.path.join(tmp_dir, "nyq_plot_load.html")
-        mag_path = os.path.join(tmp_dir, "mag_plot_load.html")
-        phase_path = os.path.join(tmp_dir, "phase_plot_load.html")
-
-        with open(nyq_path, 'w', encoding='utf-8') as f:
-            f.write(pio.to_html(fig_nyquist, full_html=True))
-        
-        with open(mag_path, 'w', encoding='utf-8') as f:
-            f.write(pio.to_html(fig_mag, full_html=True))
-
-        with open(phase_path, 'w', encoding='utf-8') as f:
-            f.write(pio.to_html(fig_phase, full_html=True))
-
-        self.nyquist_plot_view.load(QUrl.fromLocalFile(nyq_path))
-        self.load_plot_view_mag.load(QUrl.fromLocalFile(mag_path))
-        self.load_plot_view_phase.load(QUrl.fromLocalFile(phase_path))
-
-        try:
-            if self.bpnn_tab.model is None: self.bpnn_tab.btnLoadModel.click()
-            pred = self.bpnn_tab.predict_single(file_path)
-            self.last_prediction.setText(f"Creatinine Concentration:\n{pred:.2f} µM")
-            self.update_status("Plots and prediction updated.")
-        except: self.update_status("Plots updated but prediction cannot be updated.")
-
-        #self.update_status("Plots updated.")
 
     def clear_filters(self):
         self.lp_filter_real.clear()
@@ -860,4 +848,15 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainApp()
     window.show()
+
+    def _close_splash():
+        try:
+            import pyi_splash
+            pyi_splash.close()
+        except Exception:
+            pass
+
+    # Defer closing to the next event tick so Qt can repaint
+    QTimer.singleShot(0, _close_splash)
+
     sys.exit(app.exec_())
